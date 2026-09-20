@@ -1,0 +1,1 @@
+package com.prospr.repository; import java.util.*; import org.springframework.data.mongodb.repository.MongoRepository; import com.prospr.model.Goal; public interface GoalRepository extends MongoRepository<Goal,String>{ List<Goal> findByOwnerId(String ownerId); List<Goal> findByHouseholdId(String householdId); }

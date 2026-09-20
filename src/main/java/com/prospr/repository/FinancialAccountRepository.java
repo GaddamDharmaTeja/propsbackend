@@ -1,0 +1,1 @@
+package com.prospr.repository; import java.util.*; import org.springframework.data.mongodb.repository.MongoRepository; import com.prospr.model.FinancialAccount; public interface FinancialAccountRepository extends MongoRepository<FinancialAccount,String>{ List<FinancialAccount> findByOwnerId(String ownerId); List<FinancialAccount> findByHouseholdId(String householdId); }

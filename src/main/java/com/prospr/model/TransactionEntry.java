@@ -1,0 +1,3 @@
+package com.prospr.model;
+import java.math.BigDecimal; import java.time.*; import org.springframework.data.annotation.Id; import org.springframework.data.mongodb.core.mapping.Document;
+@Document("transactions") public class TransactionEntry { @Id public String id; public String ownerId, householdId, accountId, memberId, description, normalizedDescription, category, reference, source, importBatchId, updatedBy; public LocalDate date; public BigDecimal amount, debitAmount, creditAmount, closingBalance; public boolean income, excluded, internalTransfer, reasonHidden; public String systemClassification, userClassification, classificationSource; public LocalDateTime createdAt=LocalDateTime.now(), updatedAt=LocalDateTime.now(); }

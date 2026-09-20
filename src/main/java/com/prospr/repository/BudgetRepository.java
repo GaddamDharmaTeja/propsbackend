@@ -1,0 +1,1 @@
+package com.prospr.repository; import java.util.*; import org.springframework.data.mongodb.repository.MongoRepository; import com.prospr.model.Budget; public interface BudgetRepository extends MongoRepository<Budget,String>{ List<Budget> findByOwnerId(String ownerId); List<Budget> findByHouseholdId(String householdId); }
