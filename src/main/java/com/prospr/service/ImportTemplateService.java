@@ -64,7 +64,8 @@ public class ImportTemplateService {
     );
 
     public ImportTemplateAnalysisResponse analyze(
-            MultipartFile file
+            MultipartFile file,
+            String password
     ) throws IOException {
 
         String filename = file.getOriginalFilename() == null
@@ -81,7 +82,7 @@ public class ImportTemplateService {
         } else if (lower.endsWith(".xls") || lower.endsWith(".xlsx")) {
             table = excel(bytes);
         } else if (lower.endsWith(".pdf")) {
-            table = pdf(bytes);
+            table = pdf(bytes, password);
         } else {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
@@ -220,17 +221,20 @@ public class ImportTemplateService {
         return result;
     }
 
-    private List<List<String>> pdf(byte[] bytes) throws IOException {
+    private List<List<String>> pdf(byte[] bytes, String password) throws IOException {
         String text;
+        String actualPassword = password == null ? "" : password;
 
-        try (PDDocument document = Loader.loadPDF(bytes)) {
+        try (PDDocument document = Loader.loadPDF(bytes, actualPassword)) {
             PDFTextStripper stripper = new PDFTextStripper();
             stripper.setSortByPosition(true);
             text = stripper.getText(document);
         } catch (InvalidPasswordException ex) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "This PDF is password protected. Upload an unlocked statement, or use CSV or Excel."
+                    actualPassword.isBlank()
+                            ? "This PDF is password protected. Enter the statement password, then click Read statement."
+                            : "The statement password is incorrect."
             );
         }
 

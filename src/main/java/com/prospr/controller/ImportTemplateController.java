@@ -170,7 +170,8 @@ public class ImportTemplateController {
             consumes = MediaType.MULTIPART_FORM_DATA_VALUE
     )
     public ImportTemplateAnalysisResponse analyze(
-            @RequestPart("file") MultipartFile file
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(value = "statementPassword", required = false) String statementPassword
     ) throws IOException {
 
         if (file == null || file.isEmpty()) {
@@ -180,6 +181,6 @@ public class ImportTemplateController {
             );
         }
 
-        return importTemplateService.analyze(file);
+        return importTemplateService.analyze(file, statementPassword);
     }
 }
