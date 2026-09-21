@@ -29,16 +29,16 @@ public final class CategoryCatalog {
     );
 
     private static final List<Rule> RULES = List.of(
-            new Rule("bigbasket|blinkit|zepto|dmart|grocery|mart|supermarket", "Groceries"),
-            new Rule("zomato|swiggy|restaurant|cafe|dominos|pizza|mcdonald|kfc", "Dining"),
-            new Rule("uber|ola|rapido|petrol|diesel|metro|fuel", "Transport"),
+            new Rule("bigbasket|blinkit|zepto|dmart|groceries|\\bgrocery\\b|supermarket|reliance fresh", "Groceries"),
+            new Rule("zomato|swiggy|restaurant|cafe|dominos|pizza|mcdonald|kfc|\\blunch\\b|\\bdinner\\b|poha|mess\\b|juice", "Dining"),
+            new Rule("uber|ola|rapido|\\bfuel\\b|petrol|diesel|metro|\\bcab\\b", "Transport"),
             new Rule("amazon|flipkart|myntra|ajio", "Shopping"),
-            new Rule("netflix|spotify|hotstar|prime video|youtube premium", "Subscriptions"),
-            new Rule("electricity|water bill|broadband|airtel|jio|recharge", "Bills & Utilities"),
-            new Rule("hospital|pharmacy|apollo|medical", "Healthcare"),
+            new Rule("netflix|spotify|hotstar|prime video|youtube premium|tata play", "Subscriptions"),
+            new Rule("electricity|water bill|broadband|\\bairtel\\b|\\bjio\\b|vodafone|\\brecharge\\b|prepaid", "Bills & Utilities"),
+            new Rule("hospital|pharmacy|apollo|medical|\\bclinic\\b", "Healthcare"),
             new Rule("insurance|\\blic\\b", "Insurance"),
-            new Rule("\\bemi\\b|loan repayment", "Loan / EMI"),
-            new Rule("salary|payroll", "Income")
+            new Rule("\\bemi\\b|loan repayment|tata capital|hindujaleyland|ramfincorp|autopay.*financial", "Loan / EMI"),
+            new Rule("\\bsalary\\b|payroll|credited salary", "Income")
     );
 
     private CategoryCatalog() {}
@@ -89,7 +89,9 @@ public final class CategoryCatalog {
             }
             transaction.systemClassification = "REST";
         } else {
-            if (transaction.category == null || transaction.category.isBlank() || "Other".equalsIgnoreCase(transaction.category)) {
+            if (transaction.category == null || transaction.category.isBlank()
+                    || "Other".equalsIgnoreCase(transaction.category)
+                    || "Income".equalsIgnoreCase(transaction.category)) {
                 transaction.category = matchName(transaction.description);
             }
             transaction.systemClassification = typeOf(transaction.category);
