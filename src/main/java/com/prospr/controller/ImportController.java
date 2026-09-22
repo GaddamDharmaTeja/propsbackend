@@ -4,11 +4,13 @@ import com.prospr.dto.ImportConfirmation;
 import com.prospr.model.FinancialAccount;
 import com.prospr.model.ImportBatch;
 import com.prospr.model.ImportTemplate;
+import com.prospr.model.PendingImport;
 import com.prospr.model.TransactionEntry;
 import com.prospr.repository.CategoryRuleRepository;
 import com.prospr.repository.FinancialAccountRepository;
 import com.prospr.repository.ImportBatchRepository;
 import com.prospr.repository.ImportTemplateRepository;
+import com.prospr.repository.PendingImportRepository;
 import com.prospr.repository.TransactionRepository;
 import com.prospr.service.HouseholdAccess;
 import com.prospr.service.HouseholdCategoryService;
@@ -51,7 +53,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 
 import org.springframework.web.bind.annotation.CrossOrigin;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -74,6 +78,9 @@ public class ImportController {
     private final HouseholdAccess access;
     private final ImportTemplateRepository importTemplates;
     private final HouseholdCategoryService householdCategories;
+    private final PendingImportRepository pendingImports;
+
+    private static final long MAX_PENDING_BYTES = 8L * 1024 * 1024;
 
     private static final Pattern CSV_SEPARATOR =
             Pattern.compile(
@@ -113,7 +120,8 @@ public class ImportController {
             CategoryRuleRepository rules,
             HouseholdAccess access,
             ImportTemplateRepository importTemplates,
-            HouseholdCategoryService householdCategories
+            HouseholdCategoryService householdCategories,
+            PendingImportRepository pendingImports
     ) {
         this.transactions = transactions;
         this.batches = batches;
@@ -122,6 +130,7 @@ public class ImportController {
         this.access = access;
         this.importTemplates = importTemplates;
         this.householdCategories = householdCategories;
+        this.pendingImports = pendingImports;
     }
 
     // ============================================================
@@ -342,10 +351,17 @@ public class ImportController {
 
         } else {
 
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "Unsupported file format. " +
-                            "Please upload CSV, Excel, or PDF."
+            return queueForVerification(
+                    account,
+                    household,
+                    accountId,
+                    fileName,
+                    lowerName,
+                    bytes,
+                    file.getContentType(),
+                    statementPassword,
+                    "Unsupported file format. Please update the format mapping or upload CSV, Excel, or PDF.",
+                    List.of()
             );
         }
 
@@ -359,9 +375,17 @@ public class ImportController {
                         table.size() < 2
         ) {
 
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "No transaction rows were found in this file."
+            return queueForVerification(
+                    account,
+                    household,
+                    accountId,
+                    fileName,
+                    lowerName,
+                    bytes,
+                    file.getContentType(),
+                    statementPassword,
+                    "No transaction rows were found in this file. Update the format so we know how to read it.",
+                    List.of()
             );
         }
 
@@ -374,10 +398,25 @@ public class ImportController {
                 headerIndex < 0 ||
                         headerIndex >= table.size() - 1
         ) {
+            headerIndex = guessHeaderRow(table);
+        }
 
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "No transaction table was found. The file needs a header such as Date, Description, and Debit or Credit."
+        if (
+                headerIndex < 0 ||
+                        headerIndex >= table.size() - 1
+        ) {
+
+            return queueForVerification(
+                    account,
+                    household,
+                    accountId,
+                    fileName,
+                    lowerName,
+                    bytes,
+                    file.getContentType(),
+                    statementPassword,
+                    "No transaction table was found. Map the columns for this bank format.",
+                    List.of()
             );
         }
 
@@ -397,13 +436,54 @@ public class ImportController {
         );
 
         // --------------------------------------------------------
+        // Reuse a saved template when the user did not pick one
+        // --------------------------------------------------------
+
+        if (template == null) {
+            template = matchSavedTemplate(account, headers);
+            if (template != null) {
+                System.out.println(
+                        "AUTO TEMPLATE : " +
+                                template.getName() +
+                                " (" +
+                                template.getId() +
+                                ")"
+                );
+            }
+        }
+
+        // --------------------------------------------------------
         // Validate template mappings
         // --------------------------------------------------------
 
         if (template != null) {
 
-            validateTemplate(
-                    template,
+            try {
+                validateTemplate(
+                        template,
+                        headers
+                );
+            } catch (ResponseStatusException ex) {
+                if (templateId == null || templateId.isBlank()) {
+                    template = null;
+                } else {
+                    throw ex;
+                }
+            }
+        }
+
+        if (template == null
+                && findStatementHeader(table) < 0) {
+            return queueForVerification(
+                    account,
+                    household,
+                    accountId,
+                    fileName,
+                    lowerName,
+                    bytes,
+                    file.getContentType(),
+                    statementPassword,
+                    "No transaction table was found. Map the columns for this bank format.",
                     headers
             );
         }
@@ -460,12 +540,19 @@ public class ImportController {
 
         if (previewRows.isEmpty()) {
 
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "The statement was read, but no valid " +
-                            "transaction rows could be identified. Detected columns: " +
-                            String.join(", ", headers) +
-                            "."
+            return queueForVerification(
+                    account,
+                    household,
+                    accountId,
+                    fileName,
+                    lowerName,
+                    bytes,
+                    file.getContentType(),
+                    statementPassword,
+                    "The statement was read, but no valid transaction rows could be identified. Detected columns: "
+                            + String.join(", ", headers)
+                            + ". Update the format mapping and retry.",
+                    headers
             );
         }
 
@@ -977,6 +1064,186 @@ public class ImportController {
                                 access.householdId(account)
                         )
         );
+    }
+
+    // ============================================================
+    // PENDING FORMAT VERIFICATION
+    // ============================================================
+
+    @GetMapping(
+            value = "/pending",
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<List<Map<String, Object>>> listPending(
+            @AuthenticationPrincipal String account
+    ) {
+        String household = access.householdId(account);
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (PendingImport pending : pendingImports
+                .findByHouseholdIdAndStatusOrderByCreatedAtDesc(household, "NEEDS_FORMAT")) {
+            rows.add(pendingSummary(pending));
+        }
+        return ResponseEntity.ok(rows);
+    }
+
+    @GetMapping("/pending/{id}/content")
+    public ResponseEntity<byte[]> pendingContent(
+            @AuthenticationPrincipal String account,
+            @PathVariable String id
+    ) {
+        PendingImport pending = requirePending(account, id);
+        if (pending.fileBytes == null || pending.fileBytes.length == 0) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    "Stored statement file is missing."
+            );
+        }
+        String type = pending.contentType == null || pending.contentType.isBlank()
+                ? MediaType.APPLICATION_OCTET_STREAM_VALUE
+                : pending.contentType;
+        return ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename=\"" + pending.filename + "\"")
+                .contentType(MediaType.parseMediaType(type))
+                .body(pending.fileBytes);
+    }
+
+    @PostMapping(
+            value = "/pending/{id}/retry",
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<Map<String, Object>> retryPending(
+            @AuthenticationPrincipal String account,
+            @PathVariable String id,
+            @RequestParam(value = "templateId", required = false) String templateId
+    ) throws Exception {
+        PendingImport pending = requirePending(account, id);
+        if (pending.fileBytes == null || pending.fileBytes.length == 0) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Stored statement file is missing. Upload the file again."
+            );
+        }
+
+        MultipartFile mockFile =
+                new BytesMultipartFile(
+                        "file",
+                        pending.filename,
+                        pending.contentType,
+                        pending.fileBytes
+                );
+
+        ResponseEntity<Map<String, Object>> result = parse(
+                account,
+                mockFile,
+                pending.accountId,
+                templateId,
+                pending.statementPassword
+        );
+
+        Map<String, Object> body = result.getBody();
+        if (body != null && !Boolean.TRUE.equals(body.get("needsVerification"))) {
+            pending.status = "RESOLVED";
+            pending.resolvedTemplateId = templateId;
+            pending.resolvedAt = LocalDateTime.now();
+            pending.fileBytes = null;
+            pendingImports.save(pending);
+            body.put("pendingImportId", pending.id);
+        }
+        return result;
+    }
+
+    @DeleteMapping("/pending/{id}")
+    public ResponseEntity<Void> dismissPending(
+            @AuthenticationPrincipal String account,
+            @PathVariable String id
+    ) {
+        PendingImport pending = requirePending(account, id);
+        pending.status = "DISMISSED";
+        pending.fileBytes = null;
+        pending.resolvedAt = LocalDateTime.now();
+        pendingImports.save(pending);
+        return ResponseEntity.noContent().build();
+    }
+
+    private PendingImport requirePending(String account, String id) {
+        String household = access.householdId(account);
+        return pendingImports.findByIdAndHouseholdId(id, household)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Pending import not found."
+                ));
+    }
+
+    private ResponseEntity<Map<String, Object>> queueForVerification(
+            String ownerId,
+            String household,
+            String accountId,
+            String fileName,
+            String lowerName,
+            byte[] bytes,
+            String contentType,
+            String statementPassword,
+            String reason,
+            List<String> headers
+    ) {
+        if (bytes == null || bytes.length == 0) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    reason
+            );
+        }
+        if (bytes.length > MAX_PENDING_BYTES) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    reason + " File is too large to hold for format verification (max 8 MB)."
+            );
+        }
+
+        PendingImport pending = new PendingImport();
+        pending.id = java.util.UUID.randomUUID().toString();
+        pending.ownerId = ownerId;
+        pending.householdId = household;
+        pending.accountId = accountId;
+        pending.filename = fileName;
+        pending.contentType = contentType;
+        pending.sourceType = extension(lowerName);
+        try {
+            pending.checksum = sha(bytes);
+        } catch (Exception ex) {
+            pending.checksum = null;
+        }
+        pending.fileBytes = bytes;
+        pending.statementPassword = statementPassword;
+        pending.reason = reason;
+        pending.status = "NEEDS_FORMAT";
+        pendingImports.save(pending);
+
+        Map<String, Object> response = pendingSummary(pending);
+        response.put("needsVerification", true);
+        response.put("pendingImportId", pending.id);
+        response.put("message", reason);
+        response.put("headers", headers == null ? List.of() : headers);
+        response.put(
+                "updateFormatPath",
+                "/import-templates?pendingId=" + pending.id
+        );
+
+        System.out.println("IMPORT QUEUED FOR FORMAT VERIFICATION: " + pending.id);
+
+        return ResponseEntity.ok(response);
+    }
+
+    private static Map<String, Object> pendingSummary(PendingImport pending) {
+        Map<String, Object> row = new HashMap<>();
+        row.put("id", pending.id);
+        row.put("accountId", pending.accountId);
+        row.put("filename", pending.filename);
+        row.put("sourceType", pending.sourceType);
+        row.put("reason", pending.reason);
+        row.put("status", pending.status);
+        row.put("createdAt", pending.createdAt);
+        row.put("checksum", pending.checksum);
+        return row;
     }
 
     // ============================================================
@@ -3166,6 +3433,97 @@ public class ImportController {
         return best;
     }
 
+    /**
+     * Fallback when automatic bank-header detection fails:
+     * use the first row that looks like a column header strip.
+     */
+    private int guessHeaderRow(List<List<String>> table) {
+        if (table == null || table.isEmpty()) {
+            return -1;
+        }
+        for (int i = 0; i < Math.min(table.size(), 40); i++) {
+            List<String> row = table.get(i);
+            if (row == null) {
+                continue;
+            }
+            long filled = row.stream()
+                    .filter(cell -> cell != null && !cell.isBlank())
+                    .count();
+            if (filled >= 2 && i < table.size() - 1) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Pick a saved import template whose mapped columns all exist
+     * in this file, so the user is not asked to update format again.
+     */
+    private ImportTemplate matchSavedTemplate(
+            String ownerId,
+            List<String> headers
+    ) {
+        if (headers == null || headers.isEmpty()) {
+            return null;
+        }
+
+        ImportTemplate best = null;
+        int bestScore = 0;
+
+        for (ImportTemplate candidate : importTemplates.findByOwnerIdAndActiveTrue(ownerId)) {
+            int score = templateMatchScore(candidate, headers);
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+
+        return bestScore >= 3 ? best : null;
+    }
+
+    private int templateMatchScore(
+            ImportTemplate template,
+            List<String> headers
+    ) {
+        if (template == null || template.getFields() == null || template.getFields().isEmpty()) {
+            return 0;
+        }
+
+        boolean hasDate = false;
+        boolean hasDescription = false;
+        boolean hasMoney = false;
+        int matched = 0;
+
+        for (ImportTemplate.TemplateField field : template.getFields()) {
+            if (field == null || field.getType() == null) {
+                continue;
+            }
+            String column = field.getSourceColumn();
+            if (column == null || column.isBlank()) {
+                continue;
+            }
+            if (findHeaderIndex(headers, column) == null) {
+                return 0;
+            }
+            matched++;
+            String type = field.getType().trim().toUpperCase(Locale.ROOT);
+            if ("DATE".equals(type)) {
+                hasDate = true;
+            } else if ("DESCRIPTION".equals(type)) {
+                hasDescription = true;
+            } else if ("DEBIT".equals(type) || "CREDIT".equals(type)) {
+                hasMoney = true;
+            }
+        }
+
+        if (!hasDate || !hasDescription || !hasMoney) {
+            return 0;
+        }
+
+        return matched;
+    }
+
     private int statementHeaderScore(
             List<String> row
     ) {
@@ -3342,5 +3700,65 @@ public class ImportController {
             BigDecimal amount,
             boolean income
     ) {
+    }
+
+    private static final class BytesMultipartFile implements MultipartFile {
+
+        private final String name;
+        private final String originalFilename;
+        private final String contentType;
+        private final byte[] content;
+
+        private BytesMultipartFile(
+                String name,
+                String originalFilename,
+                String contentType,
+                byte[] content
+        ) {
+            this.name = name;
+            this.originalFilename = originalFilename;
+            this.contentType = contentType;
+            this.content = content == null ? new byte[0] : content;
+        }
+
+        @Override
+        public String getName() {
+            return name;
+        }
+
+        @Override
+        public String getOriginalFilename() {
+            return originalFilename;
+        }
+
+        @Override
+        public String getContentType() {
+            return contentType;
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return content.length == 0;
+        }
+
+        @Override
+        public long getSize() {
+            return content.length;
+        }
+
+        @Override
+        public byte[] getBytes() {
+            return content;
+        }
+
+        @Override
+        public InputStream getInputStream() {
+            return new ByteArrayInputStream(content);
+        }
+
+        @Override
+        public void transferTo(java.io.File dest) throws IOException {
+            java.nio.file.Files.write(dest.toPath(), content);
+        }
     }
 }
