@@ -1516,14 +1516,30 @@ public class ImportController {
     // HDFC PDF PARSER
     // ============================================================
 
-    private static final Pattern HDFC_TRANSACTION_LINE =
+    /*
+     * HDFC PDFs wrap narration across lines. Matching only whole single
+     * lines drops most rows and can glue the next txn into the previous
+     * narration. Join content lines first, then find complete txn spans.
+     */
+    private static final Pattern HDFC_TRANSACTION_SPAN =
             Pattern.compile(
-                    "^(\\d{2}/\\d{2}/\\d{2})\\s+" +
+                    "(\\d{2}/\\d{2}/\\d{2})\\s+" +
                             "(.+?)\\s+" +
                             "([A-Za-z0-9]{10,})\\s+" +
                             "(\\d{2}/\\d{2}/\\d{2})\\s+" +
                             "([0-9,]+\\.\\d{2})\\s+" +
-                            "([0-9,]+\\.\\d{2})\\s*$"
+                            "([0-9,]+\\.\\d{2})"
+            );
+
+    private static final Pattern HDFC_INCOME_HINT =
+            Pattern.compile(
+                    "\\b(salary|payroll|neft\\s*cr|imps\\s*cr|credit\\s*interest|interest\\s*credit)\\b",
+                    Pattern.CASE_INSENSITIVE
+            );
+
+    private static final Pattern HDFC_NARRATION_BLEED =
+            Pattern.compile(
+                    "(?i)\\s+(?:Page No\\s*\\.:|Statement of account).*$"
             );
 
     private List<List<String>> parseHdfcStatement(
@@ -1547,9 +1563,8 @@ public class ImportController {
                 )
         );
 
-        HdfcPdfRow current = null;
-
-        BigDecimal previousBalance = null;
+        List<String> contentLines =
+                new ArrayList<>();
 
         for (
                 String source :
@@ -1570,112 +1585,66 @@ public class ImportController {
                             Locale.ROOT
                     );
 
-            // ----------------------------------------------------
-            // Footer
-            // ----------------------------------------------------
-
-            if (
-                    lower.equals(
-                            "hdfc bank limited"
-                    ) ||
-                            lower.startsWith(
-                                    "*closing balance"
-                            ) ||
-                            lower.startsWith(
-                                    "contents of this statement"
-                            ) ||
-                            lower.startsWith(
-                                    "state account branch"
-                            ) ||
-                            lower.startsWith(
-                                    "registered office"
-                            ) ||
-                            lower.startsWith(
-                                    "generated on:"
-                            ) ||
-                            lower.startsWith(
-                                    "this is a computer generated"
-                            ) ||
-                            lower.startsWith(
-                                    "statement summary"
-                            )
-            ) {
-
-                if (current != null) {
-
-                    previousBalance =
-                            addHdfcRow(
-                                    rows,
-                                    current,
-                                    previousBalance
-                            );
-
-                    current = null;
-                }
-
+            if (isHdfcNoiseLine(lower)) {
                 continue;
             }
 
-            java.util.regex.Matcher match =
-                    HDFC_TRANSACTION_LINE.matcher(
-                            line
-                    );
-
-            if (match.matches()) {
-
-                if (current != null) {
-
-                    previousBalance =
-                            addHdfcRow(
-                                    rows,
-                                    current,
-                                    previousBalance
-                            );
-                }
-
-                current =
-                        new HdfcPdfRow(
-                                match.group(1),
-                                match.group(2),
-                                match.group(3),
-                                match.group(4),
-                                money(match.group(5)),
-                                money(match.group(6))
-                        );
-
-                continue;
-            }
-
-            if (
-                    current != null &&
-                            !isHdfcHeaderOrAccountLine(
-                                    lower
-                            )
-            ) {
-
-                current.narration
-                        .append(' ')
-                        .append(line);
-            }
+            contentLines.add(line);
         }
 
-        if (current != null) {
+        if (contentLines.isEmpty()) {
+            return rows;
+        }
 
-            addHdfcRow(
-                    rows,
-                    current,
-                    previousBalance
-            );
+        String joined =
+                String.join(
+                        " ",
+                        contentLines
+                );
+
+        java.util.regex.Matcher match =
+                HDFC_TRANSACTION_SPAN.matcher(
+                        joined
+                );
+
+        BigDecimal previousBalance = null;
+
+        while (match.find()) {
+
+            HdfcPdfRow current =
+                    new HdfcPdfRow(
+                            match.group(1),
+                            match.group(2),
+                            match.group(3),
+                            match.group(4),
+                            money(match.group(5)),
+                            money(match.group(6))
+                    );
+
+            previousBalance =
+                    addHdfcRow(
+                            rows,
+                            current,
+                            previousBalance
+                    );
         }
 
         return rows;
     }
 
-    private boolean isHdfcHeaderOrAccountLine(
+    private boolean isHdfcNoiseLine(
             String lower
     ) {
 
-        return lower.startsWith("page no") ||
+        return lower.equals("hdfc bank limited") ||
+                lower.startsWith("*closing balance") ||
+                lower.startsWith("contents of this statement") ||
+                lower.startsWith("state account branch") ||
+                lower.startsWith("registered office") ||
+                lower.startsWith("generated on:") ||
+                lower.startsWith("this is a computer generated") ||
+                lower.startsWith("statement summary") ||
+                lower.startsWith("page no") ||
                 lower.contains("statement of account") ||
                 lower.contains("account branch") ||
                 lower.startsWith("address") ||
@@ -1683,6 +1652,16 @@ public class ImportController {
                 lower.startsWith("state") ||
                 lower.startsWith("currency") ||
                 lower.startsWith("email") ||
+                lower.startsWith("phone no") ||
+                lower.startsWith("od limit") ||
+                lower.startsWith("cust id") ||
+                lower.startsWith("joint holders") ||
+                lower.startsWith("nomination") ||
+                lower.startsWith("a/c open") ||
+                lower.startsWith("account status") ||
+                lower.startsWith("mr.") ||
+                lower.startsWith("ms.") ||
+                lower.startsWith("mrs.") ||
                 lower.contains("account no") ||
                 lower.contains("customer id") ||
                 lower.contains("ifsc") ||
@@ -1696,26 +1675,30 @@ public class ImportController {
                 );
     }
 
+    private boolean isHdfcHeaderOrAccountLine(
+            String lower
+    ) {
+
+        return isHdfcNoiseLine(lower);
+    }
+
     private BigDecimal addHdfcRow(
             List<List<String>> rows,
             HdfcPdfRow row,
             BigDecimal previousBalance
     ) {
 
-        boolean credit =
-                previousBalance != null &&
-                        row.closingBalance.compareTo(
-                                previousBalance
-                        ) > 0;
-
         String narration =
-                row.narration
-                        .toString()
-                        .replaceAll(
-                                "\\s+",
-                                " "
-                        )
-                        .trim();
+                cleanHdfcNarration(
+                        row.narration.toString()
+                );
+
+        boolean credit =
+                isHdfcCredit(
+                        previousBalance,
+                        row.closingBalance,
+                        narration
+                );
 
         rows.add(
                 new ArrayList<>(
@@ -1736,6 +1719,42 @@ public class ImportController {
         );
 
         return row.closingBalance;
+    }
+
+    private boolean isHdfcCredit(
+            BigDecimal previousBalance,
+            BigDecimal closingBalance,
+            String narration
+    ) {
+
+        if (previousBalance != null) {
+            return closingBalance.compareTo(
+                    previousBalance
+            ) > 0;
+        }
+
+        return HDFC_INCOME_HINT.matcher(
+                narration == null ? "" : narration
+        ).find();
+    }
+
+    private String cleanHdfcNarration(
+            String raw
+    ) {
+
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+
+        String narration =
+                raw.replaceAll("\\s+", " ").trim();
+
+        narration =
+                HDFC_NARRATION_BLEED
+                        .matcher(narration)
+                        .replaceFirst("");
+
+        return narration.trim();
     }
 
     private BigDecimal money(
