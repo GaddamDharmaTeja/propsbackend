@@ -25,5 +25,8 @@ public class HouseholdDataMigration {
       Query query=new Query(new Criteria().andOperator(Criteria.where("ownerId").is(user.getId()), Criteria.where("householdId").exists(false)));
       for (String collection : OWNER_SCOPED) mongo.updateMulti(query, new Update().set("householdId", household), collection);
     }
+    // Custom categories predate the explicit debit/credit split. Preserve them as expenses
+    // until a household owner deliberately changes them in Category Management.
+    mongo.updateMulti(new Query(Criteria.where("type").exists(false)), new Update().set("type", "DEBIT"), "household_categories");
   }
 }

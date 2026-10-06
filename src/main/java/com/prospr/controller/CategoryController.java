@@ -2,6 +2,7 @@ package com.prospr.controller;
 
 import com.prospr.model.HouseholdCategory;
 import com.prospr.repository.HouseholdCategoryRepository;
+import com.prospr.repository.TransactionRepository;
 import com.prospr.service.CategoryCatalog;
 import com.prospr.service.HouseholdAccess;
 import com.prospr.service.HouseholdCategoryService;
@@ -32,15 +33,18 @@ import java.util.Set;
 public class CategoryController {
 
     private static final Set<String> CLASSIFICATIONS = Set.of("NECESSARY", "DISCRETIONARY", "MISCELLANEOUS", "REST");
+    private static final Set<String> TYPES = Set.of("DEBIT", "CREDIT");
 
     private final HouseholdCategoryRepository categories;
     private final HouseholdCategoryService service;
     private final HouseholdAccess access;
+    private final TransactionRepository transactions;
 
-    public CategoryController(HouseholdCategoryRepository categories, HouseholdCategoryService service, HouseholdAccess access) {
+    public CategoryController(HouseholdCategoryRepository categories, HouseholdCategoryService service, HouseholdAccess access, TransactionRepository transactions) {
         this.categories = categories;
         this.service = service;
         this.access = access;
+        this.transactions = transactions;
     }
 
     @GetMapping
@@ -59,12 +63,13 @@ public class CategoryController {
                     override == null ? builtIn.code() : override.id,
                     builtIn.name(),
                     override == null ? builtIn.classification() : override.classification,
+                    override == null ? builtIn.type() : normalizedType(override.type, builtIn.type()),
                     override == null ? "" : override.keyword,
                     false
             ));
         }
         for (HouseholdCategory category : saved.values()) {
-            result.add(view(category.id, category.name, category.classification, category.keyword, true));
+            result.add(view(category.id, category.name, category.classification, normalizedType(category.type, "DEBIT"), category.keyword, true));
         }
         return result;
     }
@@ -81,11 +86,12 @@ public class CategoryController {
         category.householdId = householdId;
         category.name = name;
         category.classification = classification(body.get("classification"));
+        category.type = categoryType(body.get("type"));
         category.keyword = cleanKeyword(body.get("keyword"));
         category.custom = true;
         categories.save(category);
         service.reclassify(householdId, category.name, category.classification);
-        return view(category.id, category.name, category.classification, category.keyword, true);
+        return view(category.id, category.name, category.classification, category.type, category.keyword, true);
     }
 
     @PutMapping
@@ -99,6 +105,14 @@ public class CategoryController {
         category.householdId = householdId;
         category.name = builtInName(name);
         category.classification = classification(body.get("classification"));
+        String nextType = categoryType(body.get("type"));
+        String currentType = category.id == null
+                ? CategoryCatalog.transactionTypeOf(category.name)
+                : normalizedType(category.type, "DEBIT");
+        if (!currentType.equals(nextType)) {
+            ensureCompatibleType(householdId, category.name, nextType);
+        }
+        category.type = nextType;
         category.keyword = cleanKeyword(body.get("keyword"));
         category.custom = category.id != null && category.custom;
         if (category.id == null) {
@@ -106,7 +120,7 @@ public class CategoryController {
         }
         categories.save(category);
         service.reclassify(householdId, category.name, category.classification);
-        return view(category.id, category.name, category.classification, category.keyword, category.custom);
+        return view(category.id, category.name, category.classification, category.type, category.keyword, category.custom);
     }
 
     @DeleteMapping("/{id}")
@@ -123,11 +137,12 @@ public class CategoryController {
         categories.delete(category);
     }
 
-    private Map<String, Object> view(String id, String name, String classification, String keyword, boolean custom) {
+    private Map<String, Object> view(String id, String name, String classification, String type, String keyword, boolean custom) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", id);
         row.put("name", name);
         row.put("classification", classification == null ? "MISCELLANEOUS" : classification);
+        row.put("type", normalizedType(type, "DEBIT"));
         row.put("keyword", keyword == null ? "" : keyword);
         row.put("custom", custom);
         return row;
@@ -154,6 +169,31 @@ public class CategoryController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose Necessary, Lifestyle creep, Other, or Not counted.");
         }
         return normalized;
+    }
+
+    private String categoryType(String value) {
+        String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+        if (!TYPES.contains(normalized)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Choose Debit or Credit for this category.");
+        }
+        return normalized;
+    }
+
+    private String normalizedType(String value, String fallback) {
+        return TYPES.contains(value == null ? "" : value.toUpperCase(Locale.ROOT))
+                ? value.toUpperCase(Locale.ROOT)
+                : fallback;
+    }
+
+    private void ensureCompatibleType(String householdId, String categoryName, String type) {
+        boolean income = "CREDIT".equals(type);
+        boolean conflict = transactions.findByHouseholdIdOrderByDateDesc(householdId).stream()
+                .filter(transaction -> categoryName.equalsIgnoreCase(transaction.category))
+                .anyMatch(transaction -> transaction.income != income);
+        if (conflict) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Reassign transactions in this category before changing it to " + (income ? "Credit" : "Debit") + ".");
+        }
     }
 
     private boolean builtIn(String name) {

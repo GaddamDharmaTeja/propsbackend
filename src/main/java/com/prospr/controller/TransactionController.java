@@ -73,6 +73,7 @@ public class TransactionController {
         item.normalizedDescription = normalize(item.description);
         CategoryCatalog.apply(item);
         categories.overlay(item);
+        validateCategoryType(item);
         return repo.save(item);
     }
 
@@ -95,6 +96,7 @@ public class TransactionController {
         item.updatedAt = LocalDateTime.now();
         CategoryCatalog.apply(item);
         categories.overlay(item);
+        validateCategoryType(item);
         return persist(item);
     }
 
@@ -187,6 +189,15 @@ public class TransactionController {
         } else {
             item.debitAmount = item.amount;
             item.creditAmount = null;
+        }
+    }
+
+    private void validateCategoryType(TransactionEntry item) {
+        String type = categories.transactionTypeFor(item.householdId, item.category);
+        boolean expectedIncome = "CREDIT".equals(type);
+        if (item.income != expectedIncome) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Choose a " + (item.income ? "Credit" : "Debit") + " category for this transaction.");
         }
     }
 }

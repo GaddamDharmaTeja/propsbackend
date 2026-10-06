@@ -12,6 +12,8 @@ public class HouseholdCategory {
     public String householdId;
     public String name;
     public String classification;
+    /** DEBIT for expense categories and CREDIT for income categories. */
+    public String type;
     public String keyword;
     public boolean custom;
 }

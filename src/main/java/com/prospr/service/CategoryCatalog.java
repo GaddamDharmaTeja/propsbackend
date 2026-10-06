@@ -8,24 +8,24 @@ import java.util.Locale;
 /** Seeded category master. Classification lives in data, not scattered if/else in the dashboard. */
 public final class CategoryCatalog {
 
-    public record Category(String code, String name, String classification) {}
+    public record Category(String code, String name, String classification, String type) {}
 
     public static final List<Category> ALL = List.of(
-            new Category("RENT", "Rent", "NECESSARY"),
-            new Category("GROCERIES", "Groceries", "NECESSARY"),
-            new Category("UTILITIES", "Bills & Utilities", "NECESSARY"),
-            new Category("HEALTHCARE", "Healthcare", "NECESSARY"),
-            new Category("TRANSPORT", "Transport", "NECESSARY"),
-            new Category("EDUCATION", "Education", "NECESSARY"),
-            new Category("INSURANCE", "Insurance", "NECESSARY"),
-            new Category("DINING", "Dining", "DISCRETIONARY"),
-            new Category("SHOPPING", "Shopping", "DISCRETIONARY"),
-            new Category("ENTERTAINMENT", "Entertainment", "DISCRETIONARY"),
-            new Category("SUBSCRIPTIONS", "Subscriptions", "DISCRETIONARY"),
-            new Category("TRAVEL", "Travel", "DISCRETIONARY"),
-            new Category("INCOME", "Income", "REST"),
-            new Category("LOAN_EMI", "Loan / EMI", "REST"),
-            new Category("OTHER", "Other", "MISCELLANEOUS")
+            new Category("RENT", "Rent", "NECESSARY", "DEBIT"),
+            new Category("GROCERIES", "Groceries", "NECESSARY", "DEBIT"),
+            new Category("UTILITIES", "Bills & Utilities", "NECESSARY", "DEBIT"),
+            new Category("HEALTHCARE", "Healthcare", "NECESSARY", "DEBIT"),
+            new Category("TRANSPORT", "Transport", "NECESSARY", "DEBIT"),
+            new Category("EDUCATION", "Education", "NECESSARY", "DEBIT"),
+            new Category("INSURANCE", "Insurance", "NECESSARY", "DEBIT"),
+            new Category("DINING", "Dining", "DISCRETIONARY", "DEBIT"),
+            new Category("SHOPPING", "Shopping", "DISCRETIONARY", "DEBIT"),
+            new Category("ENTERTAINMENT", "Entertainment", "DISCRETIONARY", "DEBIT"),
+            new Category("SUBSCRIPTIONS", "Subscriptions", "DISCRETIONARY", "DEBIT"),
+            new Category("TRAVEL", "Travel", "DISCRETIONARY", "DEBIT"),
+            new Category("INCOME", "Income", "REST", "CREDIT"),
+            new Category("LOAN_EMI", "Loan / EMI", "REST", "DEBIT"),
+            new Category("OTHER", "Other", "MISCELLANEOUS", "DEBIT")
     );
 
     private static final List<Rule> RULES = List.of(
@@ -63,6 +63,17 @@ public final class CategoryCatalog {
             return "MISCELLANEOUS";
         }
         return "NECESSARY";
+    }
+
+    public static String transactionTypeOf(String categoryName) {
+        if (categoryName != null) {
+            for (Category category : ALL) {
+                if (category.name().equalsIgnoreCase(categoryName) || category.code().equalsIgnoreCase(categoryName)) {
+                    return category.type();
+                }
+            }
+        }
+        return "DEBIT";
     }
 
     public static String matchName(String description) {

@@ -31,7 +31,9 @@ public class HouseholdCategoryService {
         List<HouseholdCategory> saved = categories.findByHouseholdId(transaction.householdId);
         String description = transaction.description == null ? "" : transaction.description.toLowerCase(Locale.ROOT);
         for (HouseholdCategory category : saved) {
-            if (category.keyword != null && !category.keyword.isBlank() && description.contains(category.keyword.toLowerCase(Locale.ROOT))) {
+            if (matchesTransactionType(category, transaction)
+                    && category.keyword != null && !category.keyword.isBlank()
+                    && description.contains(category.keyword.toLowerCase(Locale.ROOT))) {
                 transaction.category = category.name;
                 break;
             }
@@ -66,5 +68,22 @@ public class HouseholdCategoryService {
             }
         }
         return CategoryCatalog.typeOf(name);
+    }
+
+    public String transactionTypeFor(String householdId, String name) {
+        if (name != null && householdId != null) {
+            return categories.findByHouseholdId(householdId).stream()
+                    .filter(category -> name.equalsIgnoreCase(category.name))
+                    .map(category -> category.type)
+                    .filter(type -> "DEBIT".equalsIgnoreCase(type) || "CREDIT".equalsIgnoreCase(type))
+                    .findFirst()
+                    .orElseGet(() -> CategoryCatalog.transactionTypeOf(name));
+        }
+        return CategoryCatalog.transactionTypeOf(name);
+    }
+
+    private boolean matchesTransactionType(HouseholdCategory category, TransactionEntry transaction) {
+        String type = category.type == null || category.type.isBlank() ? "DEBIT" : category.type;
+        return transaction.income ? "CREDIT".equalsIgnoreCase(type) : "DEBIT".equalsIgnoreCase(type);
     }
 }
