@@ -24,7 +24,7 @@ class ImportConfirmationTest {
     ImportBatchRepository batches=mock(ImportBatchRepository.class);
     FinancialAccountRepository accounts=mock(FinancialAccountRepository.class);
     HouseholdAccess access=mock(HouseholdAccess.class);
-    ImportController controller=new ImportController(transactions,batches,accounts,mock(CategoryRuleRepository.class),access,null,null);
+    ImportController controller=new ImportController(transactions,batches,accounts,mock(CategoryRuleRepository.class),access,null,null,mock(PendingImportRepository.class));
     FinancialAccount bank=new FinancialAccount(); bank.id="bank"; bank.householdId="home";
     when(access.householdId("member")).thenReturn("home");
     when(accounts.findById("bank")).thenReturn(Optional.of(bank));

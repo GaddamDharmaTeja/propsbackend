@@ -25,7 +25,7 @@ class HdfcStatementParserTest {
     String password = System.getenv("HDFC_STATEMENT_PASSWORD");
     Assumptions.assumeTrue(path != null && password != null && Files.exists(Path.of(path)), "HDFC fixture not configured");
 
-    ImportController controller = new ImportController(null, null, null, null, null, null, null);
+    ImportController controller = new ImportController(null, null, null, null, null, null, null, null);
     Method pdf = ImportController.class.getDeclaredMethod("pdf", byte[].class, String.class);
     pdf.setAccessible(true);
     List<List<String>> rows = (List<List<String>>) pdf.invoke(controller, Files.readAllBytes(Path.of(path)), password);
